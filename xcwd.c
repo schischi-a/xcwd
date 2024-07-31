@@ -153,7 +153,10 @@ static void freeProcesses(processes_t p)
     free(p);
 }
 
-static processes_t getProcesses(void)
+/*
+ * If it exists (pid != -1), this will also return the window's entry in pid_proc.
+ */
+static processes_t getProcesses(long pid, struct proc_s *pid_proc)
 {
     processes_t p = NULL;
 #ifdef LINUX
@@ -186,6 +189,9 @@ static processes_t getProcesses(void)
                 p->ps[j].ppid);
         fclose(tn);
         j++;
+
+        if (p->ps[j].pid == pid)
+            memcpy(pid_proc, p->ps + j, sizeof(*pid_proc));
     }
     p->n = j;
     globfree(&globbuf);
@@ -220,6 +226,9 @@ static processes_t getProcesses(void)
             strncpy(p->ps[i].cwd, kif->kf_path, MAXPATHLEN);
             LOG("\t%-20s\tpid=%6ld\tppid=%6ld\n", p->ps[i].name, p->ps[i].pid,
                 p->ps[i].ppid);
+
+            if (p->ps[i].pid == pid)
+                memcpy(pid_proc, p->ps + i, sizeof(*pid_proc));
         }
 
     }
@@ -248,13 +257,16 @@ static processes_t getProcesses(void)
         strlcpy(p->ps[i].name, kip->p_comm, sizeof(p->ps[i].name));
         LOG("\t%-20s\tpid=%6ld\tppid=%6ld\n", p->ps[i].name, p->ps[i].pid,
                 p->ps[i].ppid);
+
+        if (p->ps[i].pid == pid)
+            memcpy(pid_proc, p->ps + i, sizeof(*pid_proc));
     }
     free(kp);
 #endif
     return p;
 }
 
-static int readPath(struct proc_s *proc)
+static int readPath(const struct proc_s *proc)
 {
 #ifdef LINUX
     char buf[255];
@@ -296,10 +308,10 @@ static int readPath(struct proc_s *proc)
     return 1;
 }
 
-static int cwdOfDeepestChild(processes_t p, long pid)
+static int cwdOfDeepestChild(processes_t p, const struct proc_s *pid_proc)
 {
     int i;
-    struct proc_s key = { .pid = pid, .ppid = pid},
+    struct proc_s key = { .ppid = pid_proc->pid },
                   *res = NULL, *lastRes = NULL;
 
     do {
@@ -311,9 +323,9 @@ static int cwdOfDeepestChild(processes_t p, long pid)
                 sizeof(struct proc_s), ppidCmp);
     } while(res);
 
-    if(!lastRes) {
-        return readPath(&key);
-    }
+    if (!lastRes)
+        /* process without subprocesses */
+        return readPath(pid_proc);
 
     for(i = 0; lastRes != p->ps && (lastRes - i)->ppid == lastRes->ppid; ++i)
         if(readPath((lastRes - i)))
@@ -338,16 +350,17 @@ int main(int argc, const char *argv[])
 
     processes_t p;
     long pid;
+    struct proc_s pid_proc = { .pid = -1 };
     int ret = EXIT_SUCCESS;
     Window w = focusedWindow();
     if (w == None)
         return getHomeDirectory();
 
     pid = windowPid(w);
-    p = getProcesses();
-    if(!p)
+    p = getProcesses(pid, &pid_proc);
+    if (!p)
         return getHomeDirectory();
-    if(pid != -1)
+    if (pid_proc.pid != -1)
         qsort(p->ps, p->n, sizeof(struct proc_s), ppidCmp);
     else {
         long unsigned int size;
@@ -366,13 +379,13 @@ int main(int argc, const char *argv[])
                 break;
         }
         if (res) {
-            pid = res->pid;
+            memcpy(&pid_proc, res, sizeof(pid_proc));
             LOG("Found %s (%ld)\n", res->name, res->pid);
         }
         if (size)
             free(strings);
     }
-    if (pid == -1 || !cwdOfDeepestChild(p, pid))
+    if (pid_proc.pid == -1 || !cwdOfDeepestChild(p, &pid_proc))
         ret = getHomeDirectory();
     freeProcesses(p);
     return ret;
